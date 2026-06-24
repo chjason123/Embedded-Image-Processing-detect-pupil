@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on Sat Aug   3 12:46:13 2019
-@author: LALIT ARORA (Modified for Dual Pupil Detection & Batch Processing)
+@author: LALIT ARORA (Modified for Dual Pupil Detection, Distance Constraint & Visual Annotations)
 """
 
 import cv2
@@ -68,57 +68,61 @@ class pupil_detection():
                 continue
                 
             distance = abs(self._centroid[0] - x) + abs(self._centroid[1] - y)
-            # 額外把計算出的中心點 (x, y) 存起來，後面比對用
             cnt_with_distance.append((cnt, distance, (x, y)))
-        
-        # 依據與重心的距離「由小到大」排序
-        cnt_with_distance.sort(key=lambda item: item[1])
-        
-        # 篩選出 2 個彼此不重疊且最接近重心的輪廓
-        final_cnts = []
-        selected_centers = [] # 用來記錄已經被選中的瞳孔中心
-        
-        # 設定防重疊的最小距離門檻（單位：像素）
-        MIN_PUPIL_DISTANCE = 50
         
         # 依據與重心的距離「由小到大」排序
         cnt_with_distance.sort(key=lambda item: item[1])
         
         final_cnts = []
         selected_centers = []
-        
-        # 預設一個最小門檻（萬一沒抓到第一個瞳孔時的防呆）
-        min_pupil_distance = 20 
+        first_pupil_diameter = 0
         
         for item in cnt_with_distance:
             current_cnt = item[0]
             current_center = item[2]
             
-            # 計算當前輪廓的半徑與直徑
+            # 計算當前輪廓的半徑與直徑（保留浮點數精確度，先不轉 int）
             _, current_radius = cv2.minEnclosingCircle(current_cnt)
             current_diameter = current_radius * 2
             
-            # 如果是第一個選中的瞳孔，我們動態調整後續的距離門檻
+            # 如果是第一個選中的瞳孔（基準眼）
             if len(final_cnts) == 0:
                 final_cnts.append(current_cnt)
                 selected_centers.append(current_center)
-                
-                # 【核心邏輯】用第一個瞳孔的直徑來反推兩眼最短距離
-                # 乘上 3.5 倍（可依據你的圖片實際分佈調整，理論極限是 7.5 倍，但實務上算上眼球轉動、角度傾斜，設 3~5 倍最安全）
-                min_pupil_distance = current_diameter * 6.5
+                first_pupil_diameter = current_diameter
                 continue
             
-            # 如果已經有第一個瞳孔了，拿剛剛算出來的動態門檻來檢查第二個輪廓
-            is_too_close = False
+            # 如果已經有第一個瞳孔了，檢查第二個候選輪廓
+            is_valid_pupil = True
             for prev_center in selected_centers:
+                # 1. 計算兩點間的總體幾何距離 (歐幾里得距離)
                 dist_between_pupils = np.sqrt((current_center[0] - prev_center[0])**2 + 
                                               (current_center[1] - prev_center[1])**2)
                 
-                if dist_between_pupils < min_pupil_distance:
-                    is_too_close = True
+                # 2. 計算兩點間的垂直距離 (Y 軸差值)
+                vertical_distance = abs(current_center[1] - prev_center[1])
+                
+                # 3. 計算兩個瞳孔的直徑誤差絕對值
+                diameter_diff = abs(current_diameter - first_pupil_diameter)
+                
+                # 【約束條件 1】防重疊：兩眼中心總體距離必須大於第一個瞳孔直徑的 6.5 倍
+                if dist_between_pupils < (first_pupil_diameter * 6.5):
+                    is_valid_pupil = False
+                    break
+                    
+                # 【約束條件 2】垂直限制：垂直高度差不能大於第一個瞳孔的直徑
+                if vertical_distance > first_pupil_diameter:
+                    is_valid_pupil = False
+                    break
+                
+                # 【約束條件 3】大小相近限制（二選一，目前採用推薦的 10% 彈性比例）：
+                # 方案 A (依你要求): diameter_diff > 0.5 （太嚴格，容易誤殺）
+                # 方案 B (實務推薦): diameter_diff > (first_pupil_diameter * 0.1) （容許 10% 誤差）
+                if diameter_diff > (first_pupil_diameter * 0.1):
+                    is_valid_pupil = False
                     break
             
-            if not is_too_close:
+            if is_valid_pupil:
                 final_cnts.append(current_cnt)
                 selected_centers.append(current_center)
             
@@ -127,18 +131,35 @@ class pupil_detection():
         
         # 迭代繪製這兩個瞳孔
         self._pupils = []
+        centers_for_line = []
+        
         for i, cnt in enumerate(final_cnts):
             (x, y), radius = cv2.minEnclosingCircle(cnt)
             center = (int(x), int(y))
             radius = int(radius)
+            diameter = radius * 2
+            centers_for_line.append(center)
             
             # 在原圖上畫出檢測到的瞳孔（用藍色圓圈標記）
             cv2.circle(self._img, center, radius, (255, 0, 0), 2)
-            # 順便標註這是第幾個偵測到的瞳孔
-            cv2.putText(self._img, f"Pupil {i+1}", (center[0]-20, center[1]-radius-10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # 標註瞳孔編號與直徑大小
+            cv2.putText(self._img, f"P{i+1} Dia:{diameter}px", (center[0]-40, center[1]-radius-10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
             
             self._pupils.append((center[0], center[1], radius))
+        
+        # 如果成功偵測到兩個瞳孔，繪製兩眼連線與距離標示
+        if len(centers_for_line) == 2:
+            pt1, pt2 = centers_for_line[0], centers_for_line[1]
+            pd_distance = np.sqrt((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)
+            
+            # 畫一線段連接兩瞳孔中心 (綠色)
+            cv2.line(self._img, pt1, pt2, (0, 255, 0), 1, cv2.LINE_AA)
+            
+            # 計算連線的中心點，用來放距離文字
+            mid_point = (int((pt1[0] + pt2[0]) / 2), int((pt1[1] + pt2[1]) / 2) - 15)
+            cv2.putText(self._img, f"Dist: {pd_distance:.1f}px", mid_point, 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
         
         filename = os.path.basename(self._img_path)
         print(f"[{filename}] 成功偵測到 {len(self._pupils)} 個瞳孔：", self._pupils)
@@ -175,13 +196,11 @@ if __name__ == "__main__":
     img_count = 0
     
     for file in files:
-        # 檢查是否為圖片檔案
         if file.lower().endswith(valid_extensions):
             img_count += 1
             full_input_path = os.path.join(input_folder, file)
-            full_output_path = os.path.join(output_folder, f"processed_{file}") # 新檔名前面加上 processed_
+            full_output_path = os.path.join(output_folder, f"processed_{file}")
             
-            # 實例化並執行偵測，傳入儲存路徑
             detector = pupil_detection(full_input_path)
             detector.start_detection(save_path=full_output_path)
             

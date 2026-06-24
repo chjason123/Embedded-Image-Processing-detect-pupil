@@ -58,72 +58,23 @@ class pupil_detection():
         ret, thresh1 = cv2.threshold(erosion, 210, 255, cv2.THRESH_BINARY)
         cnts, hierarchy = cv2.findContours(thresh1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 建立一個列表來儲存所有輪廓及其與重心的距離與中心座標
+        # 建立一個列表來儲存所有輪廓及其與重心的距離
         cnt_with_distance = []
         
         for cnt in cnts:
             (x, y), radius = cv2.minEnclosingCircle(cnt)
-            # 排除太小或過大的雜訊輪廓
+            # 排除太小或過大的雜訊輪廓（可根據你的圖片解析度調整範圍）
             if radius < 3 or radius > 100: 
                 continue
                 
             distance = abs(self._centroid[0] - x) + abs(self._centroid[1] - y)
-            # 額外把計算出的中心點 (x, y) 存起來，後面比對用
-            cnt_with_distance.append((cnt, distance, (x, y)))
+            cnt_with_distance.append((cnt, distance))
         
         # 依據與重心的距離「由小到大」排序
         cnt_with_distance.sort(key=lambda item: item[1])
         
-        # 篩選出 2 個彼此不重疊且最接近重心的輪廓
-        final_cnts = []
-        selected_centers = [] # 用來記錄已經被選中的瞳孔中心
-        
-        # 設定防重疊的最小距離門檻（單位：像素）
-        MIN_PUPIL_DISTANCE = 50
-        
-        # 依據與重心的距離「由小到大」排序
-        cnt_with_distance.sort(key=lambda item: item[1])
-        
-        final_cnts = []
-        selected_centers = []
-        
-        # 預設一個最小門檻（萬一沒抓到第一個瞳孔時的防呆）
-        min_pupil_distance = 20 
-        
-        for item in cnt_with_distance:
-            current_cnt = item[0]
-            current_center = item[2]
-            
-            # 計算當前輪廓的半徑與直徑
-            _, current_radius = cv2.minEnclosingCircle(current_cnt)
-            current_diameter = current_radius * 2
-            
-            # 如果是第一個選中的瞳孔，我們動態調整後續的距離門檻
-            if len(final_cnts) == 0:
-                final_cnts.append(current_cnt)
-                selected_centers.append(current_center)
-                
-                # 【核心邏輯】用第一個瞳孔的直徑來反推兩眼最短距離
-                # 乘上 3.5 倍（可依據你的圖片實際分佈調整，理論極限是 7.5 倍，但實務上算上眼球轉動、角度傾斜，設 3~5 倍最安全）
-                min_pupil_distance = current_diameter * 6.5
-                continue
-            
-            # 如果已經有第一個瞳孔了，拿剛剛算出來的動態門檻來檢查第二個輪廓
-            is_too_close = False
-            for prev_center in selected_centers:
-                dist_between_pupils = np.sqrt((current_center[0] - prev_center[0])**2 + 
-                                              (current_center[1] - prev_center[1])**2)
-                
-                if dist_between_pupils < min_pupil_distance:
-                    is_too_close = True
-                    break
-            
-            if not is_too_close:
-                final_cnts.append(current_cnt)
-                selected_centers.append(current_center)
-            
-            if len(final_cnts) == 2:
-                break
+        # 取出前 2 個最接近重心的輪廓（即左眼與右眼）
+        final_cnts = [item[0] for item in cnt_with_distance[:2]]
         
         # 迭代繪製這兩個瞳孔
         self._pupils = []
@@ -147,6 +98,7 @@ class pupil_detection():
         if save_path:
             cv2.imwrite(save_path, self._img)
         else:
+            # 若無指定儲存路徑，才彈出視窗（避免批次處理時視窗卡住）
             self.show_image(self._img)
         
     def start_detection(self, save_path=None):
@@ -159,8 +111,8 @@ class pupil_detection():
 # ==================== 批次執行區域 ====================
 if __name__ == "__main__":
     # 1. 設定你的輸入與輸出資料夾路徑
-    input_folder = r'Eye Images' 
-    output_folder = r'Eye Images Output version 3' 
+    input_folder = r'E:\eyes\Eye Images' 
+    output_folder = r'E:\eyes\Eye Images Output' 
     
     # 2. 如果輸出資料夾不存在，自動建立它
     if not os.path.exists(output_folder):
